@@ -1,8 +1,6 @@
 {
 	"dependencies": {
 		"@liamcottle/meshcore.js": "1.10.0",
-		"linkedom": "0.18.12",
-		"mqtt": "5.14.0",
-		"rss-parser": "^3.13.0"
+		"ethers": "^5.7.2"
 	}
 }

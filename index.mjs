@@ -1,35 +1,24 @@
 import { Constants, NodeJSSerialConnection } from "@liamcottle/meshcore.js";
-import { DOMParser } from 'linkedom';
-import * as mqtt from 'mqtt';
+import { ethers } from 'ethers';
 import * as utils from './utils.mjs';
 import config from './config.json' with { type: 'json' };
-import Parser from 'rss-parser';
 
-const optionsShort = {
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false
+const AAVE_POOL_ABI = [
+  'function getReserveData(address asset) view returns (uint256 configuration, uint128 liquidityIndex, uint128 currentLiquidityRate, uint128 variableBorrowIndex, uint128 currentVariableBorrowRate, uint128 currentStableBorrowRate, uint40 lastUpdateTimestamp, uint16 id, address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress, address interestRateStrategyAddress, uint128 accruedToTreasury, uint128 unbacked, uint128 isolationModeTotalDebt)'
+];
+
+const TOKEN_ADDRESSES = {
+  USDC: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+  EURC: '0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c'
 };
 
 const port = process.argv[2] ?? config.port;
 
 const channels = {
-  alerts: null,
-  weather: null
+  bitcoin: null
 };
 
-const seen = {
-  blitz: {},
-  warnings: {},
-};
-
-let geoCache = {};
-
-let blitzBuffer = [];
-
-let meteoAlerts = []
+let priceHistory = null;
 
 console.log(`Connecting to ${port}`);
 const connection = new NodeJSSerialConnection(port);
@@ -46,27 +35,23 @@ connection.on('connected', async () => {
     }
   }
 
-  await registerBlitzortungMqtt(blitzHandler, config.blitzArea);
-  utils.setAlarm(config.weatherAlarm, sendWeather);
-  setInterval(blitzWarning, config.timers.blitzCollection);
+  // Load previous price from file
+  priceHistory = utils.loadJson(config.bitcoin.priceFile) || { lastPrice: null, lastUpdate: null };
+  console.log('Loaded price history:', priceHistory);
 
-  if (config.meteoAlerts.enabled) {
-    setInterval(checkMeteoAlerts, config.timers.meteoAlerts);
-    checkMeteoAlerts();
-  }
+  utils.setAlarm(config.bitcoinAlarm, sendBitcoinUpdate);
 
-  console.log('weatherBot ready.');
+  console.log('bitcoinBot ready.');
 });
 
-// listen for new messages
 connection.on(Constants.PushCodes.MsgWaiting, async () => {
   try {
     const waitingMessages = await connection.getWaitingMessages();
     for (const message of waitingMessages) {
       if (message.contactMessage) {
-        await onContactMessageReceived(message.contactMessage);
+        console.log('Received contact message', message.contactMessage);
       } else if (message.channelMessage) {
-        await onChannelMessageReceived(message.channelMessage);
+        console.log('Received channel message', message.channelMessage);
       }
     }
   } catch (e) {
@@ -74,158 +59,119 @@ connection.on(Constants.PushCodes.MsgWaiting, async () => {
   }
 });
 
-async function checkMeteoAlerts() {
-  Object.keys(meteoAlerts).forEach(key => {
-    if (meteoAlerts[key] < Date.now() - (config.meteoAlerts.timeout * 60 * 1000)) {
-      delete meteoAlerts[key];
-    }
-  });
-
-  let parser = new Parser({
-    headers: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9' },
-    xml2jsOptions: {
-      explicitArray: false,
-    },
-    customFields: {
-      item: [
-        ['cap:areaDesc', 'area'],
-        ['cap:event', 'event'],
-        ['cap:certainty', 'certainty'],
-        ['cap:severity', 'severity'],
-        ['cap:expires', 'end'],
-        ['cap:identifier', 'identifier'],
-        ['cap:onset', 'start']
-      ]
-    }
-  });
-  let warnigs = [];
-  const feed = await parser.parseURL(config.meteoAlerts.url);
-  if (feed.items && feed.items.length > 0) {
-    feed.items.forEach((item) => {
-      if (config.meteoAlerts.regions.includes(item.area)) {
-        const endTime = new Date(item.end);
-
-        if (endTime < Date.now()) 
-          return;
-
-        if (meteoAlerts[item.identifier])
-          return;
-
-        warnigs.push({
-          id: item.identifier,
-          region: item.area,
-          certainty: item.certainty,
-          severity: item.severity,
-          event: parseEvent(item.event),
-          start: item.start,
-          end: item.end
-        });
-      }
-    });
-  }
-
-  if (warnigs.length > 0) {
-    const sorted = warnigs.sort((a, b) => new Date(a.start) - new Date(b.start));
-    sorted.forEach(item => {
-      const message = interpolate(config.meteoAlerts.messageTemplate, {
-        region: item.region,
-        start: formatDate(item.start),
-        end: formatDate(item.end),
-        event: config.meteoAlerts.events[item.event] ?? item.event,
-        severity: config.meteoAlerts.severity[item.severity.toLowerCase()],
-        certainty: config.meteoAlerts.certainty[item.certainty.toLowerCase()]
-      });
-      sendAlert(message, channels.weather);
-      meteoAlerts[item.id] = Date.now();
-      utils.sleep(30 * 1000);
-    });
-  }
-}
-
-function interpolate(str, data) {
-  return str.replace(/\{([^}]+)\}/g, (_, key) => {
-    return data[key] ?? "";
-  });
-}
-
-function parseEvent(event) {
-  const start = event.indexOf(' ');
-  const end = event.lastIndexOf(' ');
-  return event.substring(start + 1, end).trim().toLowerCase().replace('-', '');
-}
-
-function formatDate(date) {
-  const dt = new Date(date);
-  return dt.toLocaleString("sk-SK", optionsShort)
-}
-
-async function onContactMessageReceived(message) {
-  console.log('Received contact message', message);
-}
-
-async function onChannelMessageReceived(message) {
-  console.log(`Received channel message`, message);
-}
-
-async function sendWeather(date) {
-  const chunks = utils.splitStringToByteChunks(await getWeather(), 130);
-  if (chunks.length === 0) return;
-
-  for (const message of chunks) {
-    await sendAlert(message, channels.weather);
-  }
-}
-
-async function getWeather() {
-  let weather = '';
-
+async function getBitcoinPrice() {
   try {
-    const res = await fetch('https://www.shmu.sk/sk/?page=1&id=meteo_tpredpoved_ba');
-    const html = await res.text();
-    console.debug(`downloaded ${html.length} bytes from shmu.sk`);
-
-    const document = new DOMParser().parseFromString(html, 'text/html');
-    const weatherEl = document.querySelector('.mp-section');
-    const weatherBits = Array.from(weatherEl.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).filter(t => /\w/.test(t));
-
-    weatherBits.push(
-      ...Array.from(weatherEl.querySelectorAll('p')).map(e => e.textContent).filter(t => !/^Formul|Rozhovor/.test(t))
-    );
-
-    weather = utils.trimAndNormalize(weatherBits.join(' '));
+    const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=eur&include_24hr_change=true');
+    const data = await res.json();
+    return {
+      price: data.bitcoin.eur,
+      change24h: data.bitcoin.eur_24h_change
+    };
+  } catch (e) {
+    console.error('Failed to fetch Bitcoin price:', e);
+    return null;
   }
-  catch (e) {
-    console.error(e)
-  }
-
-  return weather;
 }
 
-async function registerBlitzortungMqtt(blitzCallback, blitzArea) {
-  const client = await mqtt.connectAsync('mqtt://blitzortung.ha.sed.pl:1883');
-  const decoder = new TextDecoder();
-
-  client.on('message', (_, data) => {
-    const json = decoder.decode(data);
-    const blitzData = JSON.parse(json);
-    if (blitzData.lat < blitzArea.minLat || blitzData.lon < blitzArea.minLon ||
-      blitzData.lat > blitzArea.maxLat || blitzData.lon > blitzArea.maxLon) { return }
-    blitzCallback(blitzData);
-  });
-
-  await client.subscribeAsync('blitzortung/1.1/#');
+async function getFearGreedIndex() {
+  try {
+    const res = await fetch('https://api.alternative.me/fng/?limit=1');
+    const data = await res.json();
+    return {
+      value: parseInt(data.data[0].value),
+      classification: data.data[0].value_classification
+    };
+  } catch (e) {
+    console.error('Failed to fetch Fear & Greed Index:', e);
+    return null;
+  }
 }
 
-function blitzHandler(blitzData) {
-  const blitz = utils.calculateHeadingAndDistance(config.myPosition.lat, config.myPosition.lon, blitzData.lat, blitzData.lon);
+async function getHashrate() {
+  try {
+    const res = await fetch('https://blockchain.info/q/hashrate');
+    const text = await res.text();
+    return parseInt(text);
+  } catch (e) {
+    console.error('Failed to fetch hashrate:', e);
+    return null;
+  }
+}
 
-  blitzBuffer.push({
-    key: `${blitz.heading}|${(blitz.distance / 10) | 0}`,
-    heading: blitz.heading,
-    distance: blitz.distance,
-    lat: blitzData.lat,
-    lon: blitzData.lon
-  });
+async function getBorrowRates() {
+  const rpcUrls = config.ethereum?.rpcUrls || [];
+  const poolAddress = config.ethereum?.aavePoolAddress;
+
+  if (!poolAddress || rpcUrls.length === 0) {
+    console.error('Ethereum RPC or Aave pool address not configured');
+    return null;
+  }
+
+  for (const rpcUrl of rpcUrls) {
+    try {
+      const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+      const poolContract = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);
+
+      const [eurcData, usdcData] = await Promise.all([
+        poolContract.getReserveData(TOKEN_ADDRESSES.EURC),
+        poolContract.getReserveData(TOKEN_ADDRESSES.USDC)
+      ]);
+
+      // Convert from RAY (10^27) to percentage with decimal precision
+      const RAY = 1e27;
+      const eurcRate = Number(eurcData.currentVariableBorrowRate.toBigInt()) * 100 / RAY;
+      const usdcRate = Number(usdcData.currentVariableBorrowRate.toBigInt()) * 100 / RAY;
+
+      return { eurc: eurcRate, usdc: usdcRate };
+    } catch (e) {
+      console.error(`Failed to fetch borrow rates from ${rpcUrl}:`, e.message);
+    }
+  }
+
+  console.error('All RPC endpoints failed for borrow rates');
+  return null;
+}
+
+async function sendBitcoinUpdate() {
+  const priceData = await getBitcoinPrice();
+  if (!priceData) return;
+
+  let trendEmoji = '';
+  if (priceHistory.lastPrice !== null) {
+    trendEmoji = priceData.price > priceHistory.lastPrice ? '📈' : '📉';
+  }
+
+  let parts = [`${trendEmoji}BTC: ${utils.formatPrice(priceData.price)}€`];
+
+  if (config.bitcoin.showFearGreed) {
+    const fng = await getFearGreedIndex();
+    if (fng) {
+      const fngEmoji = fng.value >= 50 ? '🤑' : '😨';
+      parts.push(`${fngEmoji}${fng.value}`);
+    }
+  }
+
+  if (config.bitcoin.showHashrate) {
+    const hashrate = await getHashrate();
+    if (hashrate) {
+      parts.push(`⛏${utils.formatHashrate(hashrate)}`);
+    }
+  }
+
+  if (config.bitcoin.showBorrowRates) {
+    const rates = await getBorrowRates();
+    if (rates) {
+      parts.push(`💸€${utils.formatBorrowRate(rates.eurc)} $${utils.formatBorrowRate(rates.usdc)}`);
+    }
+  }
+
+  const message = parts.join(' ');
+  await sendAlert(message, channels.bitcoin);
+
+  // Save current price for next comparison
+  priceHistory.lastPrice = priceData.price;
+  priceHistory.lastUpdate = new Date().toISOString();
+  utils.saveJson(config.bitcoin.priceFile, priceHistory);
 }
 
 async function sendAlert(message, channel) {
@@ -235,35 +181,6 @@ async function sendAlert(message, channel) {
   );
   console.log(`Sent out [${channel.name}]: ${message}`);
   await utils.sleep(30 * 1000);
-}
-
-async function geoCodeChached(key, lat, lon) {
-  if (geoCache[key]) return geoCache[key];
-  const location = await utils.geoCode(lat, lon);
-  if (location) geoCache[key] = location;
-  return location;
-}
-
-async function blitzWarning() {
-  const counter = {};
-
-  for (const blitz of blitzBuffer) {
-    counter[blitz.key] = counter[blitz.key]++ ?? 1;
-  }
-
-  for (const key of Object.keys(counter)) {
-    if (counter[key] < 10 || seen.blitz[key]) continue;
-    const [heading, distance] = key.split('|');
-    if (!(heading && distance)) continue;
-    var data = blitzBuffer.find(b => b.key == key);
-    if (!data) continue;
-    const location = await geoCodeChached(key, data.lat, data.lon);
-    if (!location) continue;
-    await sendAlert(`🌩️ ${location} (${distance * 10}km ${config.compasNames[heading]})`, channels.alerts);
-    seen.blitz[key] = 1;
-  }
-
-  blitzBuffer = [];
 }
 
 await connection.connect();
