@@ -61,39 +61,39 @@ connection.on(Constants.PushCodes.MsgWaiting, async () => {
 
 async function getBitcoinPrice() {
   try {
-    const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=eur&include_24hr_change=true');
+    const res = await utils.fetchWithRetry('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=eur&include_24hr_change=true');
     const data = await res.json();
     return {
       price: data.bitcoin.eur,
       change24h: data.bitcoin.eur_24h_change
     };
   } catch (e) {
-    console.error('Failed to fetch Bitcoin price:', e);
+    console.error('Failed to fetch Bitcoin price after retries:', e.message);
     return null;
   }
 }
 
 async function getFearGreedIndex() {
   try {
-    const res = await fetch('https://api.alternative.me/fng/?limit=1');
+    const res = await utils.fetchWithRetry('https://api.alternative.me/fng/?limit=1');
     const data = await res.json();
     return {
       value: parseInt(data.data[0].value),
       classification: data.data[0].value_classification
     };
   } catch (e) {
-    console.error('Failed to fetch Fear & Greed Index:', e);
+    console.error('Failed to fetch Fear & Greed Index after retries:', e.message);
     return null;
   }
 }
 
 async function getHashrate() {
   try {
-    const res = await fetch('https://blockchain.info/q/hashrate');
+    const res = await utils.fetchWithRetry('https://blockchain.info/q/hashrate');
     const text = await res.text();
     return parseInt(text);
   } catch (e) {
-    console.error('Failed to fetch hashrate:', e);
+    console.error('Failed to fetch hashrate after retries:', e.message);
     return null;
   }
 }
@@ -108,33 +108,45 @@ async function getBorrowRates() {
   }
 
   for (const rpcUrl of rpcUrls) {
-    try {
-      const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-      const poolContract = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+        const poolContract = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);
 
-      const [eurcData, usdcData] = await Promise.all([
-        poolContract.getReserveData(TOKEN_ADDRESSES.EURC),
-        poolContract.getReserveData(TOKEN_ADDRESSES.USDC)
-      ]);
+        const [eurcData, usdcData] = await Promise.all([
+          poolContract.getReserveData(TOKEN_ADDRESSES.EURC),
+          poolContract.getReserveData(TOKEN_ADDRESSES.USDC)
+        ]);
 
-      // Convert from RAY (10^27) to percentage with decimal precision
-      const RAY = 1e27;
-      const eurcRate = Number(eurcData.currentVariableBorrowRate.toBigInt()) * 100 / RAY;
-      const usdcRate = Number(usdcData.currentVariableBorrowRate.toBigInt()) * 100 / RAY;
+        // Convert from RAY (10^27) to percentage with decimal precision
+        const RAY = 1e27;
+        const eurcRate = Number(eurcData.currentVariableBorrowRate.toBigInt()) * 100 / RAY;
+        const usdcRate = Number(usdcData.currentVariableBorrowRate.toBigInt()) * 100 / RAY;
 
-      return { eurc: eurcRate, usdc: usdcRate };
-    } catch (e) {
-      console.error(`Failed to fetch borrow rates from ${rpcUrl}:`, e.message);
+        return { eurc: eurcRate, usdc: usdcRate };
+      } catch (e) {
+        console.error(`Attempt ${attempt}/3 failed for ${rpcUrl}: ${e.message}`);
+        if (attempt < 3) {
+          const delay = 10000 * Math.pow(2, attempt - 1);
+          const jitter = delay * 0.2 * Math.random();
+          console.log(`Retrying in ${Math.round((delay + jitter) / 1000)}s...`);
+          await utils.sleep(delay + jitter);
+        }
+      }
     }
+    console.error(`All retries failed for ${rpcUrl}, trying next RPC...`);
   }
 
-  console.error('All RPC endpoints failed for borrow rates');
+  console.error('All RPC endpoints failed for borrow rates after retries');
   return null;
 }
 
 async function sendBitcoinUpdate() {
   const priceData = await getBitcoinPrice();
-  if (!priceData) return;
+  if (!priceData) {
+    console.error('Bitcoin update failed: could not fetch price after retries');
+    return;
+  }
 
   let trendEmoji = '';
   if (priceHistory.lastPrice !== null) {
@@ -148,6 +160,8 @@ async function sendBitcoinUpdate() {
     if (fng) {
       const fngEmoji = fng.value >= 50 ? '🤑' : '😨';
       parts.push(`${fngEmoji}${fng.value}`);
+    } else {
+      console.warn('Fear & Greed unavailable after retries');
     }
   }
 
@@ -155,6 +169,8 @@ async function sendBitcoinUpdate() {
     const hashrate = await getHashrate();
     if (hashrate) {
       parts.push(`⛏${utils.formatHashrate(hashrate)}`);
+    } else {
+      console.warn('Hashrate unavailable after retries');
     }
   }
 
@@ -162,6 +178,8 @@ async function sendBitcoinUpdate() {
     const rates = await getBorrowRates();
     if (rates) {
       parts.push(`💸€${utils.formatBorrowRate(rates.eurc)} $${utils.formatBorrowRate(rates.usdc)}`);
+    } else {
+      console.warn('Borrow rates unavailable after retries');
     }
   }
 
