@@ -1,10 +1,13 @@
 {
   "port": "/dev/ttyACM0",
-  "bitcoinAlarm": "6:00",
-  "channels": {
-    "bitcoin": "Public"
-  },
+  "transport": { "type": "serial" },
+  "watchdogTimeoutMinutes": 360,
+  "sendIntervalSeconds": 15,
+  "limits": { "channelMessageBytes": 155, "directMessageBytes": 160 },
+  "modules": { "bitcoin": true, "ai": true },
   "bitcoin": {
+    "channel": "Public",
+    "alarm": "6:00",
     "priceFile": "./price-history.json",
     "showFearGreed": true,
     "showHashrate": true,
@@ -14,5 +17,13 @@
     "rpcUrls": ["https://ethereum-rpc.publicnode.com", "https://eth.drpc.org"],
     "aavePoolAddress": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
   },
-  "watchdogTimeoutMinutes": 360
+  "ai": {
+    "ollamaUrl": "http://localhost:11434",
+    "model": "gemma4:12b-mlx",
+    "requestTimeoutSeconds": 120,
+    "historyLength": 6,
+    "maxParts": 3,
+    "channels": { "Public": "mention" },
+    "systemPromptExtra": ""
+  }
 }
