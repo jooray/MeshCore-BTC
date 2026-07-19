@@ -23,6 +23,27 @@ let priceHistory = null;
 console.log(`Connecting to ${port}`);
 const connection = new NodeJSSerialConnection(port);
 
+// Watchdog: the serial link can go silent without emitting an error (device hang,
+// USB glitch, etc). Track the last time the connection emitted *anything*, and if
+// it goes quiet for too long, exit with a distinct code so run.sh knows to restart us.
+const WATCHDOG_TIMEOUT_MS = (config.watchdogTimeoutMinutes ?? 360) * 60 * 1000;
+const WATCHDOG_EXIT_CODE = 42;
+
+let lastActivity = Date.now();
+const originalEmit = connection.emit.bind(connection);
+connection.emit = (...args) => {
+  lastActivity = Date.now();
+  return originalEmit(...args);
+};
+
+setInterval(() => {
+  const idleMs = Date.now() - lastActivity;
+  if (idleMs > WATCHDOG_TIMEOUT_MS) {
+    console.error(`WATCHDOG: no activity from MeshCore device for ${Math.round(idleMs / 60000)} minutes, exiting (code ${WATCHDOG_EXIT_CODE}) for restart`);
+    process.exit(WATCHDOG_EXIT_CODE);
+  }
+}, 60 * 1000);
+
 connection.on('connected', async () => {
   console.log(`Connected to ${port}`);
 
@@ -110,7 +131,7 @@ async function getBorrowRates() {
   for (const rpcUrl of rpcUrls) {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
         const poolContract = new ethers.Contract(poolAddress, AAVE_POOL_ABI, provider);
 
         const [eurcData, usdcData] = await Promise.all([
@@ -120,8 +141,8 @@ async function getBorrowRates() {
 
         // Convert from RAY (10^27) to percentage with decimal precision
         const RAY = 1e27;
-        const eurcRate = Number(eurcData.currentVariableBorrowRate.toBigInt()) * 100 / RAY;
-        const usdcRate = Number(usdcData.currentVariableBorrowRate.toBigInt()) * 100 / RAY;
+        const eurcRate = Number(eurcData.currentVariableBorrowRate) * 100 / RAY;
+        const usdcRate = Number(usdcData.currentVariableBorrowRate) * 100 / RAY;
 
         return { eurc: eurcRate, usdc: usdcRate };
       } catch (e) {
