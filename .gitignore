@@ -2,4 +2,6 @@ package-lock.json
 .vscode/launch.json
 node_modules
 config.json
+price-history.json
+contacts-cache.json
 DEPLOYMENT.local.md

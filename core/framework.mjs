@@ -175,34 +175,70 @@ export async function startBot(config, modules) {
 
   // Resolving a sender means connection.getContacts(), which enumerates the
   // whole contact table and - like syncNextMessage - waits forever for its
-  // terminating frame. On a node whose contact storage is full (PUSH_CODE_
-  // CONTACTS_FULL, frame code 144) that stall is easy to hit, and it used to
-  // swallow the message before any module saw it. Cache what we resolve, bound
-  // what we don't, and treat an unresolved sender as a nameless one rather than
-  // a reason to drop their message: replying only needs the 6-byte key prefix
-  // the message already carries.
+  // terminating EndOfContacts frame. On this node that call reliably stalls,
+  // so it must never sit in the path of an incoming message.
+  //
+  // Instead the table is mirrored locally: refreshed in the background, kept
+  // on disk so a restart starts with names already known, and looked up as a
+  // plain map. A miss costs nothing - it just schedules a refresh and reports
+  // the sender as unnamed. Replying doesn't need the table at all, only the
+  // 6-byte key prefix the message already carries.
   const contactLookupTimeoutMs = (config.contactLookupTimeoutSeconds ?? 15) * 1000;
-  const contactCache = new Map();
+  const contactsRefreshIntervalMs = (config.contactsRefreshIntervalSeconds ?? 300) * 1000;
+  const contactsCacheFile = config.contactsCacheFile ?? './contacts-cache.json';
 
+  let contactsByPrefix = new Map();
+  let contactsRefreshing = false;
+  let contactsRefreshedAt = 0;
+
+  function contactRecord(publicKeyHex, advName) {
+    return { publicKey: Buffer.from(publicKeyHex, 'hex'), publicKeyHex, advName };
+  }
+
+  function loadContactsCache() {
+    const cached = utils.loadJson(contactsCacheFile);
+    if (!Array.isArray(cached)) return;
+    contactsByPrefix = new Map(cached
+      .filter(c => typeof c?.publicKey === 'string')
+      .map(c => [utils.formatPublicKey(c.publicKey), contactRecord(c.publicKey, c.advName ?? null)]));
+    console.log(`[framework] loaded ${contactsByPrefix.size} contacts from ${contactsCacheFile}`);
+  }
+
+  async function refreshContacts() {
+    if (contactsRefreshing) return;
+    contactsRefreshing = true;
+    try {
+      const contacts = await withTimeout(connection.getContacts(), contactLookupTimeoutMs, 'contact refresh');
+      const records = contacts
+        .filter(c => c?.publicKey)
+        .map(c => contactRecord(Buffer.from(c.publicKey).toString('hex'), c.advName ?? null));
+      contactsByPrefix = new Map(records.map(c => [utils.formatPublicKey(c.publicKey), c]));
+      utils.saveJson(contactsCacheFile, records.map(c => ({ publicKey: c.publicKeyHex, advName: c.advName })));
+      console.log(`[framework] refreshed ${records.length} contacts from the device`);
+    } catch (e) {
+      console.error('[framework] contact refresh failed:', e?.message ?? e);
+    } finally {
+      contactsRefreshedAt = Date.now();
+      contactsRefreshing = false;
+    }
+  }
+
+  function scheduleContactRefresh() {
+    if (Date.now() - contactsRefreshedAt < contactsRefreshIntervalMs) return;
+    refreshContacts().catch(e => console.error('[framework] contact refresh threw:', e));
+  }
+
+  // Never awaits the device - a miss returns null and refreshes in the
+  // background, so the message is dispatched immediately either way.
   async function lookupContact(pubKeyPrefix) {
     const key = utils.formatPublicKey(pubKeyPrefix);
-    if (contactCache.has(key)) return contactCache.get(key);
-
-    let contact = null;
-    try {
-      contact = (await withTimeout(
-        connection.findContactByPublicKeyPrefix(pubKeyPrefix),
-        contactLookupTimeoutMs,
-        'contact lookup',
-      )) ?? null;
-    } catch (e) {
-      console.error(`[framework] contact lookup for ${key} failed:`, e?.message ?? e);
-      return null; // not cached - a later message from them can try again
-    }
-
-    contactCache.set(key, contact);
-    return contact;
+    const hit = contactsByPrefix.get(key);
+    if (hit) return hit;
+    scheduleContactRefresh();
+    return null;
   }
+
+  loadContactsCache();
 
   async function drainOnce() {
     let waitingMessages;
@@ -292,6 +328,10 @@ export async function startBot(config, modules) {
 
     console.log(`[framework] ready with modules: ${activeModules.map(m => m.name).join(', ') || '(none)'}`);
     modulesReady = true;
+
+    // Not awaited: if the device stalls on this, messages still flow - we just
+    // report senders by key prefix until a later refresh succeeds.
+    refreshContacts().catch(e => console.error('[framework] initial contact refresh threw:', e));
 
     // Messages may have queued up on the device while we were offline or
     // still initializing - do one drain pass now instead of waiting for the
