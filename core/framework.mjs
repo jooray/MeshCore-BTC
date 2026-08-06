@@ -41,14 +41,20 @@ function normalizeChannelMessage(channelMessage, { self, channelsByIdx }) {
   };
 }
 
-async function normalizeDirectMessage(contactMessage, connection) {
+// Races a promise the library may never settle. The loser keeps running - these
+// library calls have no cancel - but with the contact cache below we only ever
+// pay for that once per unknown sender.
+function withTimeout(promise, timeoutMs, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function normalizeDirectMessage(contactMessage, lookupContact) {
   const pubKeyPrefix = contactMessage.pubKeyPrefix;
-  let contact = null;
-  try {
-    contact = (await connection.findContactByPublicKeyPrefix(pubKeyPrefix)) ?? null;
-  } catch (e) {
-    console.error('[framework] findContactByPublicKeyPrefix failed:', e?.message ?? e);
-  }
+  const contact = await lookupContact(pubKeyPrefix);
 
   return {
     kind: 'direct',
@@ -163,15 +169,38 @@ export async function startBot(config, modules) {
   const drainTimeoutMs = (config.drainTimeoutSeconds ?? 120) * 1000;
 
   async function fetchWaitingMessages() {
-    let timer;
-    const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('timeout')), drainTimeoutMs);
-    });
+    return withTimeout(connection.getWaitingMessages(), drainTimeoutMs, 'timeout');
+  }
+
+  // Resolving a sender means connection.getContacts(), which enumerates the
+  // whole contact table and - like syncNextMessage - waits forever for its
+  // terminating frame. On a node whose contact storage is full (PUSH_CODE_
+  // CONTACTS_FULL, frame code 144) that stall is easy to hit, and it used to
+  // swallow the message before any module saw it. Cache what we resolve, bound
+  // what we don't, and treat an unresolved sender as a nameless one rather than
+  // a reason to drop their message: replying only needs the 6-byte key prefix
+  // the message already carries.
+  const contactLookupTimeoutMs = (config.contactLookupTimeoutSeconds ?? 15) * 1000;
+  const contactCache = new Map();
+
+  async function lookupContact(pubKeyPrefix) {
+    const key = utils.formatPublicKey(pubKeyPrefix);
+    if (contactCache.has(key)) return contactCache.get(key);
+
+    let contact = null;
     try {
-      return await Promise.race([connection.getWaitingMessages(), timeout]);
-    } finally {
-      clearTimeout(timer);
+      contact = (await withTimeout(
+        connection.findContactByPublicKeyPrefix(pubKeyPrefix),
+        contactLookupTimeoutMs,
+        'contact lookup',
+      )) ?? null;
+    } catch (e) {
+      console.error(`[framework] contact lookup for ${key} failed:`, e?.message ?? e);
+      return null; // not cached - a later message from them can try again
     }
+
+    contactCache.set(key, contact);
+    return contact;
   }
 
   async function drainOnce() {
@@ -190,7 +219,7 @@ export async function startBot(config, modules) {
     for (const wrapper of waitingMessages) {
       if (wrapper.contactMessage) {
         console.debug('[framework] raw direct message:', wrapper.contactMessage);
-        const msg = await normalizeDirectMessage(wrapper.contactMessage, connection);
+        const msg = await normalizeDirectMessage(wrapper.contactMessage, lookupContact);
         console.log(`[framework] direct message from ${msg.senderName ?? '(unknown contact)'} `
           + `[${utils.formatPublicKey(msg.pubKeyPrefix)}]: ${msg.text}`);
         await dispatch('onDirectMessage', msg);

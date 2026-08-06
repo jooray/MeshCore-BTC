@@ -173,16 +173,21 @@ async function replyWith(ctx, cfg, { limit, maxParts, historyKey, systemPrompt, 
 async function handleDirect(msg, ctx) {
   const cfg = ctx.moduleConfig;
 
-  if (!msg.contact) {
-    ctx.log('direct message from unknown contact (no public key match) - skipping');
+  // The device only needs the 6-byte key prefix to route a reply, and that
+  // prefix comes with the message - so an unresolved contact (full contact
+  // storage, or a sender the node has never met) costs us the display name,
+  // not the conversation.
+  const replyTo = msg.contact?.publicKey ?? msg.pubKeyPrefix;
+  if (!replyTo) {
+    ctx.log('direct message with no usable public key - skipping');
     return;
   }
 
   const limit = ctx.limits.directMessageBytes;
   const maxParts = cfg.maxParts ?? DEFAULTS.maxParts;
   const budget = computeBudget(limit, maxParts);
-  const historyKey = `dm:${Buffer.from(msg.contact.publicKey).toString('hex')}`;
-  const senderName = msg.senderName ?? msg.contact.advName ?? null;
+  const historyKey = `dm:${ctx.utils.formatPublicKey(msg.pubKeyPrefix)}`;
+  const senderName = msg.senderName ?? msg.contact?.advName ?? null;
 
   const systemPrompt = buildSystemPrompt({
     selfName: ctx.self.name,
@@ -201,12 +206,12 @@ async function handleDirect(msg, ctx) {
       historyKey,
       systemPrompt,
       userContent: msg.text,
-      send: (part) => ctx.sendToContact(msg.contact.publicKey, part),
+      send: (part) => ctx.sendToContact(replyTo, part),
     });
   } catch (e) {
     ctx.logError('Ollama call failed for direct message:', e?.message ?? e);
     try {
-      await ctx.sendToContact(msg.contact.publicKey, UNAVAILABLE_MESSAGE);
+      await ctx.sendToContact(replyTo, UNAVAILABLE_MESSAGE);
     } catch (sendErr) {
       ctx.logError('failed to send "unavailable" notice:', sendErr?.message ?? sendErr);
     }

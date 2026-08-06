@@ -77,6 +77,13 @@ library can't parse hangs it forever - `draining` stays true, later `MsgWaiting`
 `drainAgain` flag, and the bot goes deaf while frames keep arriving so idle time never grows. `core/framework.mjs`
 races each fetch against `config.drainTimeoutSeconds` (default 120) and exits 42 on expiry.
 
+`connection.getContacts()` has the same shape - it waits forever for `EndOfContacts` - and direct messages hit it
+via `findContactByPublicKeyPrefix` when resolving the sender, which stalls easily on a node whose contact storage
+is full (`PUSH_CODE_CONTACTS_FULL`, logged as `unhandled frame: code=144`). The framework bounds it with
+`config.contactLookupTimeoutSeconds` (default 15), caches resolved contacts per sender prefix, and passes
+`contact: null` through rather than dropping the message - replying needs only the 6-byte key prefix the message
+already carries, which is all `sendCommandSendTxtMsg` puts on the wire anyway.
+
 Exit code `42` has no special meaning to Node itself — it's just how the bot communicates "I gave up, please
 restart me" to whatever is supervising it. `run.sh` is that supervisor: it loops forever, restarting `node
 index.mjs` after any exit (watchdog-triggered or otherwise) with a 10s delay, logging the exit code and timestamp
@@ -90,6 +97,7 @@ each time. Run the bot via `./run.sh` in production instead of calling `node ind
   "transport": { "type": "serial" },
   "watchdogTimeoutMinutes": 360,
   "drainTimeoutSeconds": 120,
+  "contactLookupTimeoutSeconds": 15,
   "sendIntervalSeconds": 15,
   "limits": { "channelMessageBytes": 155, "directMessageBytes": 160 },
   "modules": { "bitcoin": true, "ai": true },

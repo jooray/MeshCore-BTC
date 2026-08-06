@@ -80,6 +80,7 @@ node index.mjs /dev/ttyACM0
 | `transport.type` | `"serial"` | Transport used to reach the device. Only `"serial"` is implemented today. |
 | `watchdogTimeoutMinutes` | `360` | Minutes of connection inactivity before the bot exits with code 42 for `run.sh` to restart it. |
 | `drainTimeoutSeconds` | `120` | Seconds a single fetch of waiting messages may take before the bot exits with code 42. Guards against a device frame the library can't parse, which otherwise hangs the fetch forever and silently deafens the bot. |
+| `contactLookupTimeoutSeconds` | `15` | Seconds to wait for the device to enumerate its contacts when resolving a direct message's sender. On expiry the message is still delivered to modules, just without a resolved contact or sender name. Results are cached per sender. |
 | `sendIntervalSeconds` | `15` | Minimum gap between any two outgoing messages (channel or direct), across all modules. |
 | `limits.channelMessageBytes` | `155` | Max UTF-8 byte size of a single channel message. |
 | `limits.directMessageBytes` | `160` | Max UTF-8 byte size of a single direct message. |
