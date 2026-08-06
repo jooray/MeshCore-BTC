@@ -65,7 +65,9 @@ raw}` and `{kind:'direct', contact, senderName, pubKeyPrefix, text, raw}`. Chann
 multi-line) - parsed defensively via regex, raw messages are always logged at debug level.
 
 **Send queue:** all outgoing messages, from every module, funnel through one `SendQueue` (`core/send-queue.mjs`)
-that paces transmissions at least `sendIntervalSeconds` (default 15s) apart, FIFO, capped at 20 queued jobs.
+that paces transmissions at least `sendIntervalSeconds` (default 15s) apart, FIFO, capped at 20 queued jobs. Each
+send is bounded by `sendTimeoutSeconds` (default 30) - the library's send call waits for a `Sent`/`Err` frame with
+no timeout of its own, so one unconfirmed transmission would otherwise park the worker and mute the whole bot.
 
 **Watchdog / Auto-Restart:** `core/watchdog.mjs` listens on `connection.on('rx', ...)` and `connection.on('connected',
 ...)` (not a monkey-patched `emit`) to track the last time the device produced real activity. A 60-second timer
@@ -105,6 +107,7 @@ each time. Run the bot via `./run.sh` in production instead of calling `node ind
   "drainTimeoutSeconds": 120,
   "contactLookupTimeoutSeconds": 15,
   "sendIntervalSeconds": 15,
+  "sendTimeoutSeconds": 30,
   "limits": { "channelMessageBytes": 155, "directMessageBytes": 160 },
   "modules": { "bitcoin": true, "ai": true },
   "bitcoin": {

@@ -11,9 +11,10 @@ function sleep(ms) {
 // outgoing messages - regardless of which module produced them - are paced
 // through a single worker with a minimum gap between transmissions.
 export class SendQueue {
-  constructor(connection, { minGapMs = 15000 } = {}) {
+  constructor(connection, { minGapMs = 15000, sendTimeoutMs = 30000 } = {}) {
     this.connection = connection;
     this.minGapMs = minGapMs;
+    this.sendTimeoutMs = sendTimeoutMs;
     this.jobs = [];
     this.lastSendAt = 0;
     this.workerRunning = false;
@@ -45,6 +46,22 @@ export class SendQueue {
     this._runWorker();
   }
 
+  // connection.sendTextMessage() / sendChannelTextMessage() resolve only when
+  // the device answers with Sent or Err - neither has a timeout in the library.
+  // A missing answer would otherwise park this worker forever and take every
+  // later message from every module down with it, silently. The abandoned
+  // promise may still settle later; it just resolves into nothing.
+  _runWithTimeout(run) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`no send confirmation from the device after ${this.sendTimeoutMs / 1000}s`)),
+        this.sendTimeoutMs,
+      );
+    });
+    return Promise.race([run(), timeout]).finally(() => clearTimeout(timer));
+  }
+
   async _runWorker() {
     while (this.jobs.length > 0) {
       const job = this.jobs.shift();
@@ -55,7 +72,7 @@ export class SendQueue {
       }
 
       try {
-        await job.run();
+        await this._runWithTimeout(job.run);
         this.lastSendAt = Date.now();
         job.resolve();
       } catch (e) {

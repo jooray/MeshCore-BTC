@@ -84,6 +84,7 @@ node index.mjs /dev/ttyACM0
 | `contactsRefreshIntervalSeconds` | `300` | Minimum gap between contact-table refreshes. A message from a sender who isn't in the local mirror triggers one, at most this often. |
 | `contactsCacheFile` | `"./contacts-cache.json"` | Where the mirrored contact table is kept, so sender names survive a restart even if the device won't enumerate. |
 | `sendIntervalSeconds` | `15` | Minimum gap between any two outgoing messages (channel or direct), across all modules. |
+| `sendTimeoutSeconds` | `30` | Seconds to wait for the device to confirm a transmission before abandoning that message. Without it one unconfirmed send parks the queue forever, blocking every later message from every module. |
 | `limits.channelMessageBytes` | `155` | Max UTF-8 byte size of a single channel message. |
 | `limits.directMessageBytes` | `160` | Max UTF-8 byte size of a single direct message. |
 | `modules.<name>` | `true` | Set to `false` to disable a module without removing its config. |

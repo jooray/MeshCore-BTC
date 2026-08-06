@@ -81,19 +81,20 @@ function buildCtx(moduleName, { config, self, channelsByName, channelsByIdx, sen
     return c ? { channelIdx: c.channelIdx, name: c.name } : null;
   };
 
+  // Logged before the await, not after: a send that never gets its confirmation
+  // frame back from the device is exactly the case worth seeing in the log, and
+  // failures are reported separately by the send queue.
   const sendToChannel = async (channelIdx, text) => {
     const truncated = utils.shortenToBytes(text, limits.channelMessageBytes);
-    const result = await sendQueue.enqueueChannel(channelIdx, truncated);
     const name = channelsByIdx.get(channelIdx)?.name;
-    log(`sent to channel ${channelIdx}${name ? ` "${name}"` : ''}: ${truncated}`);
-    return result;
+    log(`-> channel ${channelIdx}${name ? ` "${name}"` : ''}: ${truncated}`);
+    return sendQueue.enqueueChannel(channelIdx, truncated);
   };
 
   const sendToContact = async (publicKey, text) => {
     const truncated = utils.shortenToBytes(text, limits.directMessageBytes);
-    const result = await sendQueue.enqueueDirect(publicKey, truncated);
-    log(`sent DM to ${utils.formatPublicKey(publicKey)}: ${truncated}`);
-    return result;
+    log(`-> DM ${utils.formatPublicKey(publicKey)}: ${truncated}`);
+    return sendQueue.enqueueDirect(publicKey, truncated);
   };
 
   const registerAlarm = (timeHHMM, cb) => utils.setAlarm(timeHHMM, cb);
@@ -132,6 +133,7 @@ export async function startBot(config, modules) {
 
   const sendQueue = new SendQueue(connection, {
     minGapMs: (config.sendIntervalSeconds ?? 15) * 1000,
+    sendTimeoutMs: (config.sendTimeoutSeconds ?? 30) * 1000,
   });
 
   let activeModules = [...modules];
