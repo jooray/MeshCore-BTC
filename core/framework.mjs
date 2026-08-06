@@ -144,6 +144,7 @@ export async function startBot(config, modules) {
 
   let draining = false;
   let drainAgain = false;
+  let modulesReady = false;
 
   async function dispatch(hookName, msg) {
     for (const module of activeModules) {
@@ -233,6 +234,13 @@ export async function startBot(config, modules) {
   }
 
   async function drain() {
+    // The MsgWaiting handler is live from the moment we connect, but module
+    // init runs afterwards and can take minutes on this device (getChannels
+    // enumerates the whole table). Draining before then pulls messages off the
+    // device and drops them, since dispatch has no ctx to hand them to. Leave
+    // them queued - the drain that follows init picks them up.
+    if (!modulesReady) return;
+
     if (draining) {
       drainAgain = true;
       return;
@@ -283,6 +291,7 @@ export async function startBot(config, modules) {
     }
 
     console.log(`[framework] ready with modules: ${activeModules.map(m => m.name).join(', ') || '(none)'}`);
+    modulesReady = true;
 
     // Messages may have queued up on the device while we were offline or
     // still initializing - do one drain pass now instead of waiting for the
