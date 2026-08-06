@@ -59,9 +59,9 @@ throwing from `init()` is logged and disabled (removed from dispatch) without cr
 caught per-module per-message.
 
 Normalized messages passed to hooks: `{kind:'channel', channel:{channelIdx,name}, text, senderName, body, fromSelf,
-raw}` and `{kind:'direct', contact, senderName, pubKeyPrefix, text, raw}`. Channel sender-name parsing assumes a
-`"SenderName: message"` text prefix (unverified library behavior) - parsed defensively via regex, raw messages are
-always logged at debug level.
+raw}` and `{kind:'direct', contact, senderName, pubKeyPrefix, text, raw}`. Channel messages carry a
+`"SenderName: message"` text prefix (confirmed against live traffic; names may contain spaces/emoji, bodies may be
+multi-line) - parsed defensively via regex, raw messages are always logged at debug level.
 
 **Send queue:** all outgoing messages, from every module, funnel through one `SendQueue` (`core/send-queue.mjs`)
 that paces transmissions at least `sendIntervalSeconds` (default 15s) apart, FIFO, capped at 20 queued jobs.
@@ -70,6 +70,12 @@ that paces transmissions at least `sendIntervalSeconds` (default 15s) apart, FIF
 ...)` (not a monkey-patched `emit`) to track the last time the device produced real activity. A 60-second timer
 checks the idle time; once it exceeds `config.watchdogTimeoutMinutes` (default 360 = 6h), it logs a `WATCHDOG:`
 message and calls `process.exit(42)`.
+
+The rx watchdog can't see a *stalled drain*: `connection.getWaitingMessages()` loops the library's
+`syncNextMessage()`, which has no timeout and settles only on a message frame or `NoMoreMessages`. One frame the
+library can't parse hangs it forever - `draining` stays true, later `MsgWaiting` pushes are swallowed by the
+`drainAgain` flag, and the bot goes deaf while frames keep arriving so idle time never grows. `core/framework.mjs`
+races each fetch against `config.drainTimeoutSeconds` (default 120) and exits 42 on expiry.
 
 Exit code `42` has no special meaning to Node itself — it's just how the bot communicates "I gave up, please
 restart me" to whatever is supervising it. `run.sh` is that supervisor: it loops forever, restarting `node
@@ -83,6 +89,7 @@ each time. Run the bot via `./run.sh` in production instead of calling `node ind
   "port": "/dev/ttyACM0",
   "transport": { "type": "serial" },
   "watchdogTimeoutMinutes": 360,
+  "drainTimeoutSeconds": 120,
   "sendIntervalSeconds": 15,
   "limits": { "channelMessageBytes": 155, "directMessageBytes": 160 },
   "modules": { "bitcoin": true, "ai": true },

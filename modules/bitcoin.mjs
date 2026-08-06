@@ -141,8 +141,7 @@ async function sendUpdate() {
   }
 
   const message = parts.join(' ');
-  await ctx.sendToChannel(channel.channelIdx, message);
-  ctx.log(`Sent out [${channel.name}]: ${message}`);
+  await ctx.sendToChannel(channel.channelIdx, message); // logs the send itself
 
   // Save current price for next comparison
   priceHistory.lastPrice = priceData.price;

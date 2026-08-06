@@ -79,6 +79,7 @@ node index.mjs /dev/ttyACM0
 | `port` | - | Serial device path. Overridden by a command-line argument if given. |
 | `transport.type` | `"serial"` | Transport used to reach the device. Only `"serial"` is implemented today. |
 | `watchdogTimeoutMinutes` | `360` | Minutes of connection inactivity before the bot exits with code 42 for `run.sh` to restart it. |
+| `drainTimeoutSeconds` | `120` | Seconds a single fetch of waiting messages may take before the bot exits with code 42. Guards against a device frame the library can't parse, which otherwise hangs the fetch forever and silently deafens the bot. |
 | `sendIntervalSeconds` | `15` | Minimum gap between any two outgoing messages (channel or direct), across all modules. |
 | `limits.channelMessageBytes` | `155` | Max UTF-8 byte size of a single channel message. |
 | `limits.directMessageBytes` | `160` | Max UTF-8 byte size of a single direct message. |
@@ -143,10 +144,11 @@ reply back to the mesh.
 - **`"all"` mode bot-loop risk**: if two bots with `"all"` mode are on the same channel, they can end up replying to
   each other indefinitely, burning airtime. Prefer `"mention"` mode on shared/public channels, and never point two
   `"all"`-mode bots at the same channel.
-- **Sender-prefix parsing is an assumption**: MeshCore channel messages are assumed to arrive as `"SenderName:
-  message"` text (this isn't formally documented by the library). The framework parses this defensively - if a
-  message doesn't match the pattern, it's treated as having no sender name rather than crashing - and always logs
-  the raw channel message at debug level so the assumption can be verified against real traffic.
+- **Sender-prefix parsing**: MeshCore channel messages arrive as `"SenderName: message"` text - confirmed against
+  live mesh traffic, though it isn't formally documented by the library. Sender names routinely contain spaces and
+  emoji (`"OM7AHJ FormatX 🇸🇰: Hi all"`) and bodies can span multiple lines. The framework parses this defensively -
+  if a message doesn't match the pattern, it's treated as having no sender name rather than crashing - and always
+  logs the raw channel message at debug level.
 
 ## Watchdog / auto-restart
 

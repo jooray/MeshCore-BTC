@@ -18,9 +18,10 @@ function createConnection(config) {
   throw new Error(`Unsupported transport type "${transportType}" - only "serial" is currently implemented`);
 }
 
-// MeshCore channel messages typically embed the sender as a "SenderName: message"
-// prefix. This is an ASSUMPTION (not documented by the library) - parse it
-// defensively and always log the raw message so it can be verified live.
+// MeshCore channel messages embed the sender as a "SenderName: message" prefix
+// (confirmed against live traffic, though not documented by the library). Sender
+// names may contain emoji and bodies may span multiple lines, hence the /s flag.
+// Still parsed defensively - a message without the prefix yields senderName null.
 function normalizeChannelMessage(channelMessage, { self, channelsByIdx }) {
   const text = channelMessage.text ?? '';
   const match = text.match(/^(.{1,40}?): (.*)$/s);
@@ -76,12 +77,17 @@ function buildCtx(moduleName, { config, self, channelsByName, channelsByIdx, sen
 
   const sendToChannel = async (channelIdx, text) => {
     const truncated = utils.shortenToBytes(text, limits.channelMessageBytes);
-    return sendQueue.enqueueChannel(channelIdx, truncated);
+    const result = await sendQueue.enqueueChannel(channelIdx, truncated);
+    const name = channelsByIdx.get(channelIdx)?.name;
+    log(`sent to channel ${channelIdx}${name ? ` "${name}"` : ''}: ${truncated}`);
+    return result;
   };
 
   const sendToContact = async (publicKey, text) => {
     const truncated = utils.shortenToBytes(text, limits.directMessageBytes);
-    return sendQueue.enqueueDirect(publicKey, truncated);
+    const result = await sendQueue.enqueueDirect(publicKey, truncated);
+    log(`sent DM to ${utils.formatPublicKey(publicKey)}: ${truncated}`);
+    return result;
   };
 
   const registerAlarm = (timeHHMM, cb) => utils.setAlarm(timeHHMM, cb);
@@ -147,18 +153,46 @@ export async function startBot(config, modules) {
     }
   }
 
+  // connection.getWaitingMessages() loops syncNextMessage(), and that promise
+  // has no timeout in the library - it settles only on a message frame or on
+  // NoMoreMessages. A frame the library can't parse (e.g. a V3 message frame)
+  // therefore hangs the drain forever: `draining` stays true, every later
+  // MsgWaiting push is swallowed by the drainAgain flag, and the bot goes
+  // silently deaf while the connection still looks healthy to the watchdog.
+  // Bound it and exit(42) so the supervisor restarts us instead.
+  const drainTimeoutMs = (config.drainTimeoutSeconds ?? 120) * 1000;
+
+  async function fetchWaitingMessages() {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('timeout')), drainTimeoutMs);
+    });
+    try {
+      return await Promise.race([connection.getWaitingMessages(), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function drainOnce() {
     let waitingMessages;
     try {
-      waitingMessages = await connection.getWaitingMessages();
+      waitingMessages = await fetchWaitingMessages();
     } catch (e) {
+      if (e?.message === 'timeout') {
+        console.error(`WATCHDOG: message drain stalled for ${drainTimeoutMs / 1000}s, exiting for a restart`);
+        process.exit(42);
+      }
       console.error('[framework] failed to fetch waiting messages:', e?.message ?? e);
       return;
     }
 
     for (const wrapper of waitingMessages) {
       if (wrapper.contactMessage) {
+        console.debug('[framework] raw direct message:', wrapper.contactMessage);
         const msg = await normalizeDirectMessage(wrapper.contactMessage, connection);
+        console.log(`[framework] direct message from ${msg.senderName ?? '(unknown contact)'} `
+          + `[${utils.formatPublicKey(msg.pubKeyPrefix)}]: ${msg.text}`);
         await dispatch('onDirectMessage', msg);
       } else if (wrapper.channelMessage) {
         console.debug('[framework] raw channel message:', wrapper.channelMessage);

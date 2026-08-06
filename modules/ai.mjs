@@ -146,10 +146,12 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Strips the first occurrence of selfName (case-insensitive) from text,
-// along with an optional leading/trailing "@", e.g. "@bot hi" -> "hi".
+// Strips the first occurrence of selfName (case-insensitive) from text, along
+// with the decoration around it: "@bot hi" -> "hi". The MeshCore apps write
+// mentions as "@[Name] text" (confirmed live, and the name keeps its emoji),
+// so the brackets have to go too or the model is handed a leading "@[ ]".
 function stripMention(text, selfName) {
-  const re = new RegExp(`@?${escapeRegExp(selfName)}@?`, 'i');
+  const re = new RegExp(`@?\\[?${escapeRegExp(selfName)}\\]?@?`, 'i');
   return text.replace(re, ' ').replace(/\s+/g, ' ').trim();
 }
 

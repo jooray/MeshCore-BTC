@@ -209,3 +209,11 @@ export function setAlarm(time, callback) {
 export function formatBorrowRate(rate) {
   return rate.toFixed(1) + '%';
 }
+
+// Short hex form of a public key (or key prefix) for log lines - accepts the
+// Uint8Array/Buffer the library hands us, or an already-hex string.
+export function formatPublicKey(publicKey, bytes = 6) {
+  if (!publicKey) return '(unknown)';
+  if (typeof publicKey === 'string') return publicKey.slice(0, bytes * 2);
+  return Buffer.from(publicKey).subarray(0, bytes).toString('hex');
+}
