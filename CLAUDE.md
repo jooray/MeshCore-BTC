@@ -92,6 +92,12 @@ already carries, which is all `sendCommandSendTxtMsg` puts on the wire.
 `drain()` is also gated on module init having completed: init takes minutes on that node, and the `MsgWaiting`
 handler is live from connect, so an early drain would fetch messages and drop them (no module ctx to dispatch to).
 
+Startup itself is bounded too. `connection.getChannels()` probes slot after slot with no timeout per probe, so one
+unanswered slot parks the bot before any module starts, with nothing after `self identity` in the log. The
+framework walks the slots itself (`connection.getChannel(idx)`, up to `config.maxChannelSlots`, each bounded by
+`config.channelQueryTimeoutSeconds`), logs each slot and its latency, stops at the first rejected slot, and exits
+42 on a timeout. `getSelfInfo()` is bounded the same way.
+
 Exit code `42` has no special meaning to Node itself — it's just how the bot communicates "I gave up, please
 restart me" to whatever is supervising it. `run.sh` is that supervisor: it loops forever, restarting `node
 index.mjs` after any exit (watchdog-triggered or otherwise) with a 10s delay, logging the exit code and timestamp
@@ -105,6 +111,8 @@ each time. Run the bot via `./run.sh` in production instead of calling `node ind
   "transport": { "type": "serial" },
   "watchdogTimeoutMinutes": 360,
   "drainTimeoutSeconds": 120,
+  "channelQueryTimeoutSeconds": 60,
+  "maxChannelSlots": 8,
   "contactLookupTimeoutSeconds": 15,
   "sendIntervalSeconds": 15,
   "sendTimeoutSeconds": 30,

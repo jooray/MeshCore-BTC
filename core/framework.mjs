@@ -177,6 +177,41 @@ export async function startBot(config, modules) {
     return withTimeout(connection.getWaitingMessages(), drainTimeoutMs, 'message drain');
   }
 
+  // connection.getChannels() probes slot after slot until one errors, and each
+  // of those probes waits forever for its answer - so a single unanswered slot
+  // parks startup before any module is initialized, with nothing logged past
+  // "self identity". Walk the slots ourselves with a timeout on each, and log
+  // what we find and how long it took.
+  const channelQueryTimeoutMs = (config.channelQueryTimeoutSeconds ?? 60) * 1000;
+  const maxChannelSlots = config.maxChannelSlots ?? 8;
+
+  async function loadChannels() {
+    const channels = [];
+    const startedAt = Date.now();
+
+    for (let channelIdx = 0; channelIdx < maxChannelSlots; channelIdx++) {
+      const slotStartedAt = Date.now();
+      let channel;
+
+      try {
+        channel = await withTimeout(connection.getChannel(channelIdx), channelQueryTimeoutMs, `channel ${channelIdx}`);
+      } catch (e) {
+        if (e instanceof TimeoutError) {
+          console.error(`WATCHDOG: ${e.message} during startup, exiting for a restart`);
+          process.exit(42);
+        }
+        break; // the device rejects past the last configured slot - that's the end of the list
+      }
+
+      const seconds = ((Date.now() - slotStartedAt) / 1000).toFixed(1);
+      console.log(`[framework] channel ${channelIdx}: "${channel?.name ?? '(unnamed)'}" (${seconds}s)`);
+      if (channel) channels.push(channel);
+    }
+
+    console.log(`[framework] ${channels.length} channels in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    return channels;
+  }
+
   // Resolving a sender means connection.getContacts(), which enumerates the
   // whole contact table and - like syncNextMessage - waits forever for its
   // terminating EndOfContacts frame. On this node that call reliably stalls,
@@ -317,19 +352,19 @@ export async function startBot(config, modules) {
     console.log(`Connected to ${port}`);
 
     try {
-      self = await connection.getSelfInfo();
+      self = await withTimeout(connection.getSelfInfo(), channelQueryTimeoutMs, 'self info query');
     } catch (e) {
+      if (e instanceof TimeoutError) {
+        console.error(`WATCHDOG: ${e.message} during startup, exiting for a restart`);
+        process.exit(42);
+      }
       console.error('[framework] getSelfInfo failed:', e?.message ?? e);
     }
     console.log(`[framework] self identity: ${self.name}`);
 
-    try {
-      const channels = await connection.getChannels();
-      channelsByName = new Map(channels.map(c => [c.name, c]));
-      channelsByIdx = new Map(channels.map(c => [c.channelIdx, c]));
-    } catch (e) {
-      console.error('[framework] getChannels failed:', e?.message ?? e);
-    }
+    const channels = await loadChannels();
+    channelsByName = new Map(channels.map(c => [c.name, c]));
+    channelsByIdx = new Map(channels.map(c => [c.channelIdx, c]));
 
     for (const module of [...activeModules]) {
       const ctx = buildCtx(module.name, { config, self, channelsByName, channelsByIdx, sendQueue, connection, limits });
