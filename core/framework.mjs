@@ -203,9 +203,12 @@ export async function startBot(config, modules) {
         break; // the device rejects past the last configured slot - that's the end of the list
       }
 
+      // A configured-but-empty slot answers with a blank name; keep it out of
+      // the lookup maps so it can't be matched by a module's channel config.
       const seconds = ((Date.now() - slotStartedAt) / 1000).toFixed(1);
-      console.log(`[framework] channel ${channelIdx}: "${channel?.name ?? '(unnamed)'}" (${seconds}s)`);
-      if (channel) channels.push(channel);
+      const name = channel?.name?.trim();
+      console.log(`[framework] channel ${channelIdx}: ${name ? `"${name}"` : '(empty slot)'} (${seconds}s)`);
+      if (name) channels.push(channel);
     }
 
     console.log(`[framework] ${channels.length} channels in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
