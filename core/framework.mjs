@@ -41,13 +41,15 @@ function normalizeChannelMessage(channelMessage, { self, channelsByIdx }) {
   };
 }
 
+class TimeoutError extends Error {}
+
 // Races a promise the library may never settle. The loser keeps running - these
 // library calls have no cancel - but with the contact cache below we only ever
 // pay for that once per unknown sender.
 function withTimeout(promise, timeoutMs, label) {
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+    timer = setTimeout(() => reject(new TimeoutError(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
@@ -172,7 +174,7 @@ export async function startBot(config, modules) {
   const drainTimeoutMs = (config.drainTimeoutSeconds ?? 120) * 1000;
 
   async function fetchWaitingMessages() {
-    return withTimeout(connection.getWaitingMessages(), drainTimeoutMs, 'timeout');
+    return withTimeout(connection.getWaitingMessages(), drainTimeoutMs, 'message drain');
   }
 
   // Resolving a sender means connection.getContacts(), which enumerates the
@@ -189,9 +191,15 @@ export async function startBot(config, modules) {
   const contactsRefreshIntervalMs = (config.contactsRefreshIntervalSeconds ?? 300) * 1000;
   const contactsCacheFile = config.contactsCacheFile ?? './contacts-cache.json';
 
+  // Every abandoned refresh leaves a listener registered inside the library's
+  // getContacts(), so on a node that never answers, retrying every 5 minutes
+  // forever is a slow leak. Back off exponentially, up to an hour.
+  const MAX_CONTACTS_BACKOFF_MS = 60 * 60 * 1000;
+
   let contactsByPrefix = new Map();
   let contactsRefreshing = false;
   let contactsRefreshedAt = 0;
+  let contactsBackoffMs = contactsRefreshIntervalMs;
 
   function contactRecord(publicKeyHex, advName) {
     return { publicKey: Buffer.from(publicKeyHex, 'hex'), publicKeyHex, advName };
@@ -217,8 +225,11 @@ export async function startBot(config, modules) {
       contactsByPrefix = new Map(records.map(c => [utils.formatPublicKey(c.publicKey), c]));
       utils.saveJson(contactsCacheFile, records.map(c => ({ publicKey: c.publicKeyHex, advName: c.advName })));
       console.log(`[framework] refreshed ${records.length} contacts from the device`);
+      contactsBackoffMs = contactsRefreshIntervalMs;
     } catch (e) {
-      console.error('[framework] contact refresh failed:', e?.message ?? e);
+      contactsBackoffMs = Math.min(contactsBackoffMs * 2, MAX_CONTACTS_BACKOFF_MS);
+      console.error(`[framework] contact refresh failed: ${e?.message ?? e}`
+        + ` (next attempt in at least ${Math.round(contactsBackoffMs / 60000)}min)`);
     } finally {
       contactsRefreshedAt = Date.now();
       contactsRefreshing = false;
@@ -226,7 +237,7 @@ export async function startBot(config, modules) {
   }
 
   function scheduleContactRefresh() {
-    if (Date.now() - contactsRefreshedAt < contactsRefreshIntervalMs) return;
+    if (Date.now() - contactsRefreshedAt < contactsBackoffMs) return;
     refreshContacts().catch(e => console.error('[framework] contact refresh threw:', e));
   }
 
@@ -247,7 +258,10 @@ export async function startBot(config, modules) {
     try {
       waitingMessages = await fetchWaitingMessages();
     } catch (e) {
-      if (e?.message === 'timeout') {
+      if (e instanceof TimeoutError) {
+        // Can't just log and carry on: the abandoned getWaitingMessages() loop
+        // is still parked on its once() listeners, which would steal frames
+        // from any drain we start next. Hand the problem to the supervisor.
         console.error(`WATCHDOG: message drain stalled for ${drainTimeoutMs / 1000}s, exiting for a restart`);
         process.exit(42);
       }
