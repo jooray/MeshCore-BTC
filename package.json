@@ -1,6 +1,6 @@
 {
 	"dependencies": {
-		"@liamcottle/meshcore.js": "1.13.0",
+		"@liamcottle/meshcore.js": "1.14.0",
 		"ethers": "^6.17.0"
 	}
 }

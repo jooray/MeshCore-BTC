@@ -60,9 +60,13 @@ throwing from `init()` is logged and disabled (removed from dispatch) without cr
 caught per-module per-message.
 
 Normalized messages passed to hooks: `{kind:'channel', channel:{channelIdx,name}, text, senderName, body, fromSelf,
-raw}` and `{kind:'direct', contact, senderName, pubKeyPrefix, text, raw}`. Channel messages carry a
+snr, raw}` and `{kind:'direct', contact, senderName, pubKeyPrefix, text, snr, raw}`. Channel messages carry a
 `"SenderName: message"` text prefix (confirmed against live traffic; names may contain spaces/emoji, bodies may be
 multi-line) - parsed defensively via regex, raw messages are always logged at debug level.
+
+`snr` comes from the V3 message frames (`ContactMsgRecvV3` 16 / `ChannelMsgRecvV3` 17), which the firmware emits
+once a client declares companion protocol version >= 3 - meshcore.js 1.14.0 does. It is `null` on the older frame
+layout, which still arrives for anything the device queued while a v1 client was the last to negotiate.
 
 **Send queue:** all outgoing messages, from every module, funnel through one `SendQueue` (`core/send-queue.mjs`)
 that paces transmissions at least `sendIntervalSeconds` (default 15s) apart, FIFO, capped at 20 queued jobs. Each

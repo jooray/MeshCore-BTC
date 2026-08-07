@@ -37,8 +37,13 @@ function normalizeChannelMessage(channelMessage, { self, channelsByIdx }) {
     senderName,
     body,
     fromSelf,
+    snr: channelMessage.snr ?? null, // only present on V3 frames
     raw: channelMessage,
   };
+}
+
+function formatSnr(snr) {
+  return snr === null || snr === undefined ? '' : ` (SNR ${snr})`;
 }
 
 class TimeoutError extends Error {}
@@ -64,6 +69,7 @@ async function normalizeDirectMessage(contactMessage, lookupContact) {
     senderName: contact?.advName ?? null,
     pubKeyPrefix,
     text: contactMessage.text ?? '',
+    snr: contactMessage.snr ?? null, // only present on V3 frames
     raw: contactMessage,
   };
 }
@@ -312,11 +318,14 @@ export async function startBot(config, modules) {
         console.debug('[framework] raw direct message:', wrapper.contactMessage);
         const msg = await normalizeDirectMessage(wrapper.contactMessage, lookupContact);
         console.log(`[framework] direct message from ${msg.senderName ?? '(unknown contact)'} `
-          + `[${utils.formatPublicKey(msg.pubKeyPrefix)}]: ${msg.text}`);
+          + `[${utils.formatPublicKey(msg.pubKeyPrefix)}]${formatSnr(msg.snr)}: ${msg.text}`);
         await dispatch('onDirectMessage', msg);
       } else if (wrapper.channelMessage) {
         console.debug('[framework] raw channel message:', wrapper.channelMessage);
         const msg = normalizeChannelMessage(wrapper.channelMessage, { self, channelsByIdx });
+        console.log(`[framework] channel ${msg.channel.channelIdx}`
+          + `${msg.channel.name ? ` "${msg.channel.name}"` : ''}`
+          + ` <- ${msg.senderName ?? '(unknown)'}${formatSnr(msg.snr)}: ${msg.body}`);
         await dispatch('onChannelMessage', msg);
       }
       // wrapper.channelData (raw telemetry pushes) is intentionally ignored.
