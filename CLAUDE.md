@@ -124,6 +124,7 @@ each time. Run the bot via `./run.sh` in production instead of calling `node ind
     "model": "gemma4:12b-mlx",
     "requestTimeoutSeconds": 120,
     "historyLength": 6,
+    "channelHistoryLength": 12,
     "maxParts": 3,
     "channels": { "Public": "mention" },
     "systemPromptExtra": ""

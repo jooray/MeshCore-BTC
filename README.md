@@ -99,7 +99,8 @@ node index.mjs /dev/ttyACM0
 | `ai.ollamaUrl` | `http://localhost:11434` | Base URL of the Ollama server. |
 | `ai.model` | `gemma4:12b-mlx` | Model name, must already be pulled in Ollama. |
 | `ai.requestTimeoutSeconds` | `120` | Abort a single Ollama call after this many seconds (no retries). |
-| `ai.historyLength` | `6` | Number of past exchanges (user+assistant pairs) kept per conversation, in memory. |
+| `ai.historyLength` | `6` | Number of past exchanges (user+assistant pairs) kept per DM conversation, in memory. |
+| `ai.channelHistoryLength` | `12` | Same, per channel - and also how many untagged channel messages may accumulate as background between two replies. |
 | `ai.maxParts` | `3` | Max number of numbered parts a reply may be split into. |
 | `ai.channels` | `{}` | Map of channel name -> `"mention"` or `"all"` (see below). Channels not listed are ignored. |
 | `ai.systemPromptExtra` | `""` | Extra text appended to the system prompt (house rules, persona, etc). |
@@ -135,9 +136,15 @@ reply back to the mesh.
   boundary, never mid-character. If a reply genuinely can't fit in one message, it's split into up to `ai.maxParts`
   parts, sent in order and numbered `"1/2 ..."`, `"2/2 ..."`, etc. If even that isn't enough, the remainder is
   hard-truncated (content is lost, and this is logged).
-- **History**: kept in memory only, per contact (DMs) or per channel, capped at `historyLength` exchanges. **A
-  restart wipes all conversation history** - this is deliberate, not a bug, to keep the module simple and stateless
-  on disk.
+- **History**: kept in memory only, per contact (DMs) or per channel. DMs keep `ai.historyLength` exchanges;
+  channels keep `ai.channelHistoryLength`, because a channel's history also carries messages the bot wasn't
+  addressed in. In `"mention"` mode an untagged message is *remembered but not answered*, so a follow-up mention is
+  read in the context of what the channel was actually discussing - and the system prompt tells the model to treat
+  those as background and answer only what was directed at it. Consecutive messages are folded into a single turn
+  (roles must alternate for Gemma's chat template), with the fold capped at `ai.channelHistoryLength` lines so
+  untagged chatter can't grow without bound. The bot's own replies are part of the history; its own channel
+  messages are not re-ingested. **A restart wipes all conversation history** - this is deliberate, not a bug, to
+  keep the module simple and stateless on disk.
 - **Requires Ollama**: a reachable Ollama instance with the configured model already pulled
   (`ollama pull <model>`). If Ollama is down, times out, returns an HTTP error, or returns an empty reply: direct
   messages get a canned `"AI unavailable right now"` reply; channel messages fail silently (logged only, to avoid

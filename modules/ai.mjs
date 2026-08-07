@@ -5,6 +5,7 @@ const DEFAULTS = {
   model: 'gemma4:12b-mlx',
   requestTimeoutSeconds: 120,
   historyLength: 6,
+  channelHistoryLength: 12,
   maxParts: 3,
   channels: {},
   systemPromptExtra: '',
@@ -45,7 +46,8 @@ export function computeBudget(limit, maxParts) {
 
 export function buildSystemPrompt({ selfName, limit, maxParts, prefixLen, maxTotal, target, systemPromptExtra }) {
   const targetLine = target.kind === 'channel'
-    ? `You are replying in the public channel "${target.name}"; incoming messages are prefixed with the sender's name.`
+    ? `You are replying in the public channel "${target.name}"; incoming messages are prefixed with the sender's name. `
+      + `You also see messages that were not addressed to you - treat them as background, and answer only the last message directed at you.`
     : `You are in a private chat with ${target.senderName ?? 'the user'}.`;
 
   let prompt = `You are ${selfName}, a bot on a slow LoRa mesh radio network. Airtime is extremely scarce and every byte counts.
@@ -89,25 +91,57 @@ function computeTruncatedBytes(originalTrimmed, parts) {
   return Math.max(0, normalizedTotal - kept);
 }
 
-function buildMessages(systemPrompt, historyKey, userContent) {
-  const hist = history.get(historyKey) ?? [];
-  return [
-    { role: 'system', content: systemPrompt },
-    ...hist,
-    { role: 'user', content: userContent },
-  ];
+// How much of a conversation to keep, in entries. A channel keeps more because
+// its history also carries messages the bot wasn't addressed in.
+export function historyLimits(cfg, kind) {
+  const exchanges = kind === 'channel'
+    ? (cfg.channelHistoryLength ?? DEFAULTS.channelHistoryLength)
+    : (cfg.historyLength ?? DEFAULTS.historyLength);
+  return { cap: exchanges * 2, maxLines: exchanges };
 }
 
-function appendHistory(historyKey, cfg, userContent, assistantContent) {
-  const historyLength = cfg.historyLength ?? DEFAULTS.historyLength;
-  const cap = historyLength * 2;
-  const hist = history.get(historyKey) ?? [];
-  hist.push({ role: 'user', content: userContent });
-  hist.push({ role: 'assistant', content: assistantContent });
+// Consecutive user turns are folded into one entry so the roles stay strictly
+// alternating - Gemma's chat template expects that, and channel chatter would
+// otherwise produce long runs of user turns. maxLines bounds how much untagged
+// chatter can accumulate between two things the bot actually replied to.
+function withUserMessage(hist, userContent, maxLines) {
+  const out = hist.map(m => ({ ...m }));
+  const last = out[out.length - 1];
+
+  if (last?.role === 'user') {
+    last.content = `${last.content}\n${userContent}`.split('\n').slice(-maxLines).join('\n');
+  } else {
+    out.push({ role: 'user', content: userContent });
+  }
+
+  return out;
+}
+
+function storeHistory(historyKey, hist, cap) {
   while (hist.length > cap) {
     hist.shift();
   }
   history.set(historyKey, hist);
+}
+
+export function buildMessages(systemPrompt, historyKey, userContent, maxLines) {
+  const hist = history.get(historyKey) ?? [];
+  return [
+    { role: 'system', content: systemPrompt },
+    ...withUserMessage(hist, userContent, maxLines),
+  ];
+}
+
+export function appendExchange(historyKey, { cap, maxLines }, userContent, assistantContent) {
+  const hist = withUserMessage(history.get(historyKey) ?? [], userContent, maxLines);
+  hist.push({ role: 'assistant', content: assistantContent });
+  storeHistory(historyKey, hist, cap);
+}
+
+// A channel message the bot wasn't addressed in: remembered, not answered, so
+// that a later mention is read in the context of what was being discussed.
+export function appendPassive(historyKey, { cap, maxLines }, userContent) {
+  storeHistory(historyKey, withUserMessage(history.get(historyKey) ?? [], userContent, maxLines), cap);
 }
 
 async function callOllama(cfg, messages) {
@@ -155,8 +189,9 @@ function stripMention(text, selfName) {
   return text.replace(re, ' ').replace(/\s+/g, ' ').trim();
 }
 
-async function replyWith(ctx, cfg, { limit, maxParts, historyKey, systemPrompt, userContent, send }) {
-  const answer = await serializeOllamaCall(() => callOllama(cfg, buildMessages(systemPrompt, historyKey, userContent)));
+async function replyWith(ctx, cfg, { limit, maxParts, historyKey, limits, systemPrompt, userContent, send }) {
+  const messages = buildMessages(systemPrompt, historyKey, userContent, limits.maxLines);
+  const answer = await serializeOllamaCall(() => callOllama(cfg, messages));
 
   const { parts, truncatedBytes } = prepareParts(answer, { limit, maxParts });
   if (truncatedBytes > 0) {
@@ -167,7 +202,7 @@ async function replyWith(ctx, cfg, { limit, maxParts, historyKey, systemPrompt, 
     await send(part);
   }
 
-  appendHistory(historyKey, cfg, userContent, answer);
+  appendExchange(historyKey, limits, userContent, answer);
 }
 
 async function handleDirect(msg, ctx) {
@@ -204,6 +239,7 @@ async function handleDirect(msg, ctx) {
       limit,
       maxParts,
       historyKey,
+      limits: historyLimits(cfg, 'dm'),
       systemPrompt,
       userContent: msg.text,
       send: (part) => ctx.sendToContact(replyTo, part),
@@ -226,16 +262,26 @@ async function handleChannel(msg, ctx) {
 
   if (!mode) return; // unlisted/unknown channel
   if (msg.fromSelf) return;
+  if (mode !== 'mention' && mode !== 'all') return; // unrecognized mode
+
+  const historyKey = `ch:${msg.channel.channelIdx}`;
+  const limits = historyLimits(cfg, 'channel');
+  const withSender = (text) => (msg.senderName ? `${msg.senderName}: ${text}` : text);
 
   let effectiveText = msg.body;
 
   if (mode === 'mention') {
     const selfName = ctx.self.name;
     if (!selfName) return; // can't match a mention against an unknown name
-    if (effectiveText.toLowerCase().indexOf(selfName.toLowerCase()) === -1) return;
+    if (effectiveText.toLowerCase().indexOf(selfName.toLowerCase()) === -1) {
+      // Not addressed to us: remember it, don't answer it. The next mention is
+      // then read in the context of what the channel was actually discussing.
+      if (effectiveText.trim()) {
+        appendPassive(historyKey, limits, withSender(effectiveText));
+      }
+      return;
+    }
     effectiveText = stripMention(effectiveText, selfName);
-  } else if (mode !== 'all') {
-    return; // unrecognized mode
   }
 
   if (!effectiveText || !effectiveText.trim()) return;
@@ -243,7 +289,6 @@ async function handleChannel(msg, ctx) {
   const limit = ctx.limits.channelMessageBytes;
   const maxParts = cfg.maxParts ?? DEFAULTS.maxParts;
   const budget = computeBudget(limit, maxParts);
-  const historyKey = `ch:${msg.channel.channelIdx}`;
 
   const systemPrompt = buildSystemPrompt({
     selfName: ctx.self.name,
@@ -255,15 +300,14 @@ async function handleChannel(msg, ctx) {
     systemPromptExtra: cfg.systemPromptExtra ?? DEFAULTS.systemPromptExtra,
   });
 
-  const userContent = msg.senderName ? `${msg.senderName}: ${effectiveText}` : effectiveText;
-
   try {
     await replyWith(ctx, cfg, {
       limit,
       maxParts,
       historyKey,
+      limits,
       systemPrompt,
-      userContent,
+      userContent: withSender(effectiveText),
       send: (part) => ctx.sendToChannel(msg.channel.channelIdx, part),
     });
   } catch (e) {
