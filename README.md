@@ -100,8 +100,7 @@ node index.mjs /dev/ttyACM0
 | `ethereum.aavePoolAddress` | - | Aave v3 Pool contract address. |
 | `ai.ollamaUrl` | `http://localhost:11434` | Base URL of the Ollama server. |
 | `ai.model` | `gemma4:12b-mlx` | Model name, must already be pulled in Ollama. |
-| `ai.requestTimeoutSeconds` | `240` | Abort a single Ollama call after this many seconds (no retries). A cold model load can take ~90s on its own, before the answer. |
-| `ai.keepAlive` | `"30m"` | Passed to Ollama as `keep_alive`, so the model stays resident between questions instead of being reloaded for each one. |
+| `ai.requestTimeoutSeconds` | `240` | Abort a single Ollama call after this many seconds (no retries). A cold model load takes ~90s on its own, before the answer even starts - hence the generous default. |
 | `ai.historyLength` | `6` | Number of past exchanges (user+assistant pairs) kept per DM conversation, in memory. |
 | `ai.channelHistoryLength` | `12` | Same, per channel - and also how many untagged channel messages may accumulate as background between two replies. |
 | `ai.maxParts` | `3` | Max number of numbered parts a reply may be split into. |

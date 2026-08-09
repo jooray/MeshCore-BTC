@@ -4,7 +4,6 @@ const DEFAULTS = {
   ollamaUrl: 'http://localhost:11434',
   model: 'gemma4:12b-mlx',
   requestTimeoutSeconds: 240,
-  keepAlive: '30m',
   historyLength: 6,
   channelHistoryLength: 12,
   maxParts: 3,
@@ -154,10 +153,6 @@ async function callOllama(cfg, messages) {
   const ollamaUrl = cfg.ollamaUrl ?? DEFAULTS.ollamaUrl;
   const model = cfg.model ?? DEFAULTS.model;
   const timeoutMs = (cfg.requestTimeoutSeconds ?? DEFAULTS.requestTimeoutSeconds) * 1000;
-  // Ollama unloads the model when idle, and a cold load of gemma4:12b on this
-  // host costs ~90s on top of the answer - enough on its own to blow the
-  // request timeout. Ask it to stay resident between questions.
-  const keepAlive = cfg.keepAlive ?? DEFAULTS.keepAlive;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -166,7 +161,7 @@ async function callOllama(cfg, messages) {
     const res = await fetch(`${ollamaUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, stream: false, messages, keep_alive: keepAlive }),
+      body: JSON.stringify({ model, stream: false, messages }),
       signal: controller.signal,
     });
 
