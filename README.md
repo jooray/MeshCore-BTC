@@ -83,7 +83,7 @@ node index.mjs /dev/ttyACM0
 | `channelQueryTimeoutSeconds` | `60` | Seconds to wait for the device to answer a single startup query (self info, or one channel slot). On expiry the bot exits with code 42 rather than hanging before any module has started. |
 | `maxChannelSlots` | `8` | How many channel slots to probe at startup. Probing stops early at the first slot the device rejects. |
 | `contactLookupTimeoutSeconds` | `15` | Seconds a background contact-table refresh may take before it's abandoned. Never blocks an incoming message. |
-| `contactsRefreshIntervalSeconds` | `300` | Minimum gap between contact-table refreshes. A message from a sender who isn't in the local mirror triggers one, at most this often. |
+| `contactsRefreshIntervalSeconds` | `300` | Minimum gap between contact-table refreshes. A message from a sender who isn't in the local mirror triggers one, at most this often. **Set to `0` to disable refreshing entirely** - on a device with full contact storage the call never completes, and while it is outstanding the device stops answering message syncs, which trips the drain watchdog. |
 | `contactsCacheFile` | `"./contacts-cache.json"` | Where the mirrored contact table is kept, so sender names survive a restart even if the device won't enumerate. |
 | `sendIntervalSeconds` | `15` | Minimum gap between any two outgoing messages (channel or direct), across all modules. |
 | `sendTimeoutSeconds` | `30` | Seconds to wait for the device to confirm a transmission before abandoning that message. Without it one unconfirmed send parks the queue forever, blocking every later message from every module. |

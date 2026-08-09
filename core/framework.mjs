@@ -235,6 +235,14 @@ export async function startBot(config, modules) {
   const contactsRefreshIntervalMs = (config.contactsRefreshIntervalSeconds ?? 300) * 1000;
   const contactsCacheFile = config.contactsCacheFile ?? './contacts-cache.json';
 
+  // Set contactsRefreshIntervalSeconds to 0 on a node that never answers
+  // getContacts() - full contact storage does that. It isn't only a wasted
+  // call: while one is outstanding the device stops answering syncNextMessage,
+  // so a long refresh timeout takes the message drain down with it and trips
+  // the drain watchdog. Disabled, senders show as key prefixes and nothing else
+  // changes - replying never needed the contact table.
+  const contactsRefreshEnabled = contactsRefreshIntervalMs > 0;
+
   // Every abandoned refresh leaves a listener registered inside the library's
   // getContacts(), so on a node that never answers, retrying every 5 minutes
   // forever is a slow leak. Back off exponentially, up to an hour.
@@ -281,6 +289,7 @@ export async function startBot(config, modules) {
   }
 
   function scheduleContactRefresh() {
+    if (!contactsRefreshEnabled) return;
     if (Date.now() - contactsRefreshedAt < contactsBackoffMs) return;
     refreshContacts().catch(e => console.error('[framework] contact refresh threw:', e));
   }
@@ -394,7 +403,11 @@ export async function startBot(config, modules) {
 
     // Not awaited: if the device stalls on this, messages still flow - we just
     // report senders by key prefix until a later refresh succeeds.
-    refreshContacts().catch(e => console.error('[framework] initial contact refresh threw:', e));
+    if (contactsRefreshEnabled) {
+      refreshContacts().catch(e => console.error('[framework] initial contact refresh threw:', e));
+    } else {
+      console.log(`[framework] contact refresh disabled, using ${contactsByPrefix.size} cached contact(s)`);
+    }
 
     // Messages may have queued up on the device while we were offline or
     // still initializing - do one drain pass now instead of waiting for the
