@@ -125,6 +125,15 @@ function buildCtx(moduleName, { config, self, channelsByName, channelsByIdx, sen
 }
 
 export async function startBot(config, modules) {
+  // A promise rejecting with nothing attached to it is fatal to Node by
+  // default, so one unlucky module could take the whole bot down - it did:
+  // a timed-out Ollama call killed the process. The bot's job is to stay on
+  // the air; log it and keep running. Genuinely unrecoverable states are
+  // handled deliberately elsewhere, by exiting 42 for the supervisor.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[framework] unhandled rejection (ignored, still running):', reason?.message ?? reason);
+  });
+
   const connection = createConnection(config);
 
   // Start the watchdog before connecting so a hang during the initial
